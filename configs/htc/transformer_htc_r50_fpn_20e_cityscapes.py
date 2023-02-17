@@ -13,8 +13,8 @@ model = dict(
             ),
             transformer_head=dict(
                 type='TransformerSemanticHead',
-                inchannels=256,
-                outchannels=256,
+                in_channels=256,
+                out_channels=256,
                 ),
             fcn_head=dict(
                 type='FCNHead',

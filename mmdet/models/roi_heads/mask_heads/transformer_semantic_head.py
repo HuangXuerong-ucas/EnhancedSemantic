@@ -21,12 +21,38 @@ class PositionEmbeddingXY(BaseModule):
     
     def get_position_angle_vec(self, temperature, dim):
         '''
-        def get_position_angle_vec(position):
-        return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
+        This function computes the position angle vector, which is a vector of
+        size dim that is used to compute the position embeddings. The formula
+        for the position angle vector is:
+        
+        [position / np.power(temperature, 2 * (hid_j // 2) / dim) for hid_j in range(dim)]
+        
+        Args:
+            temperature (float): Temperature parameter for the position angle vector
+            dim (int): Dimensionality of the position angle vector
+            
+        Returns:
+            torch.FloatTensor: The position angle vector
         '''
         return torch.FloatTensor([1 / np.power(temperature, 2 * (i // 2) / dim) for i in range(dim)])
 
     def forward(self, b, x_len = 32 , y_len = 32, embed_dim = 256 , temperature=10000):
+        '''
+        This function computes the position embeddings for a batch of images. The position
+        embeddings are computed using a sine/cosine function that takes the cumulative sum
+        of a binary mask along the x and y axes. The resulting embeddings are concatenated
+        along the channel dimension and returned.
+
+        Args:
+            b (int): Batch size
+            x_len (int): Length of the x-axis
+            y_len (int): Length of the y-axis
+            embed_dim (int): Dimensionality of the position embeddings
+            temperature (float): Temperature parameter for the position angle vector
+
+        Returns:
+            torch.Tensor: Position embeddings of size [b, embed_dim, x_len, y_len]
+        '''
         mask = torch.ones(b, x_len, y_len)
         x_embed = mask.cumsum(0,dtype = torch.float32) 
         y_embed = mask.cumsum(1,dtype = torch.float32)
@@ -39,6 +65,16 @@ class PositionEmbeddingXY(BaseModule):
     
 @HEADS.register_module()
 class TransformerEncoderLayer(BaseModule):
+    """
+    A single layer of the Transformer encoder.
+    
+    Args:
+        embed_dim (int): The number of expected features in the input.
+        num_heads (int): The number of heads in the multiheadattention models.
+        inner_dim (int): The dimensionality of the "inner" (often smaller) layer in the 
+        feedforward network.
+        dropout (float, optional): The dropout probability. Default: 0.1.
+    """
     def __init__(self,embed_dim, num_heads, inner_dim, dropout = 0.1):
         super().__init__()
         self.embed_dim = embed_dim
@@ -52,20 +88,22 @@ class TransformerEncoderLayer(BaseModule):
         self.activation = nn.ReLU(inplace=True)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
-
-
         self.attns = nn.MultiheadAttention(self.embed_dim, self.num_heads, self.dropout)
     
 
     def forward(self, x):
-        # x shape:len, b, dim   传入之前需要转换：b, len, dim -> len, b, dim
-        # 输入: torch.Size([2, 256, 125, 100])  b, c, h, w -> b, c, hw: b, dim, len, -> len, b, dim
+        """
+        Args:
+            x (torch.Tensor): The input tensor of shape (batch_size, channels, height, width).
+        Returns:
+            torch.Tensor: The output tensor of the same shape as the input tensor.
+        """
         b, c, h, w = x.size()
         x = x.view(b,c,-1).permute(2, 0, 1).contiguous() # b, c, hw -> hw, b, c:len, b, dim
 
         q = k = v = x
         out, _ = self.attns(q, k, v)
-        out = x + self.dropout1(out)  #? 问题要不要加droupout?
+        out = x + self.dropout1(out)  
         x = self.norm1(out)
         
         out = self.linear2(self.activation(self.linear1(x)))
@@ -77,6 +115,18 @@ class TransformerEncoderLayer(BaseModule):
 
 @HEADS.register_module()
 class TransformerEncoder(BaseModule):
+    """
+    The Transformer encoder, which consists of multiple TransformerEncoderLayers.
+    
+    Args:
+        embed_dim (int, optional): The dimension of the position embedding. Default: 256.
+        num_heads (int, optional): The number of heads in the multiheadattention models. Default: 8.
+        inner_dim (int, optional): The dimensionality of the "inner" (often smaller) layer in the 
+        feedforward network. Default: 1024.
+        num_layers (int, optional): The number of TransformerEncoderLayers in the encoder. Default: 6.
+        dropout (float, optional): The dropout probability. Default: 0.1.
+    """
+
     def __init__(self,embed_dim = 256, num_heads=8,inner_dim=1024, num_layers=6, dropout = 0.1):
         super().__init__()
         self.embed_dim = embed_dim
@@ -90,6 +140,13 @@ class TransformerEncoder(BaseModule):
             self.layers.append(TransformerEncoderLayer(self.embed_dim,self.num_heads,self.inner_dim,self.dropout))
 
     def forward(self,x):
+        """
+        Args:
+            x (torch.Tensor): The input tensor of shape (batch_size, channels, height, width).
+
+        Returns:
+            torch.Tensor: The output tensor of the same shape as the input tensor.
+        """
         b, c, h, w = x.size()
         pos = self.postion_embedding(b, h, w, self.embed_dim).to(x.device)
         x = x + pos
@@ -99,14 +156,32 @@ class TransformerEncoder(BaseModule):
         
 @HEADS.register_module()
 class TransformerSemanticHead(BaseModule):
-    def __init__(self,inchannels, outchannels = 256, num_grids = 36, num_layers = 6):
+    """
+    The semantic head of the transformer-based semantic segmentation detection model.
+    
+    Args:
+        in_channels (int): The number of channels in the input feature map.
+        out_channels (int, optional): The number of output channels. Default: 256.
+        num_grids (int, optional): The number of grids in the feature map. Default: 36.
+        num_layers (int, optional): The number of TransformerEncoderLayers in the encoder. 
+        Default: 6.
+    """
+    def __init__(self,in_channels, out_channels = 256, num_grids = 36, num_layers = 6):
         super(TransformerSemanticHead,self).__init__()
-        self.inchannels = inchannels
-        self.outchannels = outchannels
-        self.transformer = TransformerEncoder(self.outchannels, 8, 784, num_layers)  #激活函数的使用，dropout的使用
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.transformer = TransformerEncoder(self.out_channels, 8, 784, num_layers) 
         self.num_grids = num_grids
+        
     @auto_fp16()
     def forward(self, x):
+        """
+        Args:
+            x (torch.Tensor): The input tensor of shape (batch_size, in_channels, height, width).
+
+        Returns:
+            torch.Tensor: The output tensor of shape (batch_size, num_grids^2, out_channels).
+        """
         w,h = x.shape[-2:]
         x = F.interpolate(x, size=(self.num_grids,self.num_grids), mode='bilinear', align_corners=True)
         x = self.transformer(x)
@@ -114,6 +189,29 @@ class TransformerSemanticHead(BaseModule):
         
 @HEADS.register_module()
 class FusedTransformerSemanticHead(BaseModule):
+    """
+    The fused semantic head of the enhanced semantic segmentation detection model, witch combines the
+    transformer head and FCN head to extract the enhanced semantic information.
+    
+    Args:
+        fusion_head (FusionHead): The fusion module of the input multi-scale images features.
+        transformer_head (TransformerSemanticHead, optional): The Transformer head. Default: None.
+        fcn_head (FCNHead, optional): The FCN head. Default: None.
+        loss_seg (dict, optional): The loss function of the semantic segmentation. Default:
+        None. 
+        with_fcn (bool, optional): Whether to use FCN head. Defaule: True.
+        with_trans (bool, optional): Whether to use transformer head. Default: True.
+        with_cls (bool, optional): Whether to use multi-classification on semantic segmentation head. 
+        Default: None.
+        num_grids (int, optional): The number of grids in the feature map. Default:
+        36. 
+        cls_loss_weight (FusionHead): The loss weight of the multi-classification. Default: 2.0.
+        conv_channels (int, optional): The number of channels of channel-reduction input. Default: 256.
+        num_classes (int, optional): The number of semantic segmentation categories. Default: 183.
+        cls_class (int, optional): The number of categories for multi-categorization. Default: 80.
+        None. 
+    """
+    
     def __init__(self, fusion_head, transformer_head=None, fcn_head=None, loss_seg=None, with_fcn=True, with_trans=True, with_cls=True, num_grids = 36, cls_loss_weight = 2.0, conv_channels=256, num_classes = 183, cls_class = 80, init_cfg=dict(
                      type='Kaiming', override=dict(name='conv_logits'))):
         super(FusedTransformerSemanticHead,self).__init__(init_cfg)
@@ -159,13 +257,13 @@ class FusedTransformerSemanticHead(BaseModule):
         self.criterion = build_loss(loss_seg)
 
         self.conv_logits = nn.Conv2d(self.conv_channels, self.num_classe, 1)
-        
-        
-        
-        
 
     @auto_fp16()
     def forward(self, x):
+        """
+        Args:
+            x (List(torch.Tensor)): The input tensor list, each with shape (batch_size, in_channels, height, width).
+        """
         x = self.fusion_head(x)
         if self.with_trans:
             trm_feat = self.transformer_head(x)
@@ -176,13 +274,12 @@ class FusedTransformerSemanticHead(BaseModule):
             class_scores = self.fc(self.reduce_conv(trm_feat).view(x.shape[0], -1))
 
         if self.with_trans and self.with_fcn:
+            # upsample the trm_feat to the same size as the input x, and then add it with fcn_feat to get add_feat
             trm_feat = F.interpolate(trm_feat, size=tuple(x.shape[-2:]), mode='bilinear', align_corners=True)  #upsample
             add_feat = torch.add(trm_feat, fcn_feat)
-            #fusing
             fused_feat = self.fused_embedding(add_feat)
             mask_pred = self.conv_logits(add_feat)
             if self.with_cls:
-                # return mask_pred, fused_feat, class_scores , trm_feat, fcn_feat
                 return mask_pred, fused_feat, class_scores
             else:
                 return mask_pred, fused_feat
@@ -200,10 +297,8 @@ class FusedTransformerSemanticHead(BaseModule):
     @force_fp32(apply_to=('mask_pred', 'class_scores'))
     def loss(self, mask_pred, labels, class_scores=None, gt_labels=None):
         # (semantic_pred, gt_semantic_seg,scores,gt_labels)
-        # print('mask_pred:',mask_pred.size())
         labels = labels.squeeze(1).long()
         mask_pred = mask_pred.squeeze(1)
-        # print('labels:',labels.size())
         loss_semantic_seg = self.criterion(mask_pred, labels)
 
         if self.with_cls and self.with_trans:
