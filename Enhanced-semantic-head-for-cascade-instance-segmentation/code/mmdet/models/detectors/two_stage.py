@@ -130,19 +130,7 @@ class TwoStageDetector(BaseDetector):
         gt_bboxes,
         gt_labels,
         gt_masks=None,
-        """
-        # print('before:', len(gt_bboxes[0]), len(gt_labels[0]), len(gt_masks[0]), len(img_metas[0]))
-        areas = [gt_mask.areas for gt_mask in gt_masks]
-        for i in range(len(areas)):
-            tag = areas[i] < 32*32;
-            gt_bboxes[i] = gt_bboxes[i][tag]
-            gt_labels[i] = gt_labels[i][tag]
-            gt_masks[i] = gt_masks[i][tag]
-            # img_metas = img_metas[tag]
-        # print(img_metas)
-        # print('after:', len(gt_bboxes[0]), len(gt_labels[0]), len(gt_masks[0]), len(img_metas))
-        
-            
+        """            
             
         x = self.extract_feat(img)
 
